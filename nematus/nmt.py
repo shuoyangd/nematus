@@ -449,6 +449,125 @@ def build_sampler(tparams, options, use_noise, trng, return_alignment=False):
 
     return f_init, f_next
 
+def build_vocab_probs_sampler(tparams, options, use_noise, trng, return_alignment=False):
+
+    if options['use_dropout'] and options['model_version'] < 0.1:
+        retain_probability_emb = 1-options['dropout_embedding']
+        retain_probability_hidden = 1-options['dropout_hidden']
+        retain_probability_source = 1-options['dropout_source']
+        retain_probability_target = 1-options['dropout_target']
+        rec_dropout_d = theano.shared(numpy.array([retain_probability_hidden]*5, dtype='float32'))
+        emb_dropout_d = theano.shared(numpy.array([retain_probability_emb]*2, dtype='float32'))
+        ctx_dropout_d = theano.shared(numpy.array([retain_probability_hidden]*4, dtype='float32'))
+        target_dropout = theano.shared(numpy.float32(retain_probability_target))
+    else:
+        rec_dropout_d = theano.shared(numpy.array([1.]*5, dtype='float32'))
+        emb_dropout_d = theano.shared(numpy.array([1.]*2, dtype='float32'))
+        ctx_dropout_d = theano.shared(numpy.array([1.]*4, dtype='float32'))
+
+    x, ctx = build_encoder(tparams, options, trng, use_noise, x_mask=None, sampling=True)
+    n_samples = x.shape[2]
+
+    # get the input for decoder rnn initializer mlp
+    ctx_mean = ctx.mean(0)
+    # ctx_mean = concatenate([proj[0][-1],projr[0][-1]], axis=proj[0].ndim-2)
+
+    if options['use_dropout'] and options['model_version'] < 0.1:
+        ctx_mean *= retain_probability_hidden
+
+    init_state = get_layer_constr('ff')(tparams, ctx_mean, options,
+                                    prefix='ff_state', activ='tanh')
+
+    print >>sys.stderr, 'Building f_init...',
+    outs = [init_state, ctx]
+    f_init = theano.function([x], outs, name='f_init', profile=profile)
+    print >>sys.stderr, 'Done'
+
+    # x: 1 x 1
+    y = tensor.vector('y_sampler', dtype='int64')
+    init_state = tensor.matrix('init_state', dtype='float32')
+
+    # if it's the first word, emb should be all zero and it is indicated by -1
+    decoder_embedding_suffix = '' if options['tie_encoder_decoder_embeddings'] else '_dec'
+    emb = get_layer_constr('embedding')(tparams, y, suffix=decoder_embedding_suffix)
+    if options['use_dropout'] and options['model_version'] < 0.1:
+        emb = emb * target_dropout
+    emb = tensor.switch(y[:, None] < 0,
+                        tensor.zeros((1, options['dim_word'])),
+                        emb)
+
+
+    # apply one step of conditional gru with attention
+    proj = get_layer_constr(options['decoder'])(tparams, emb, options,
+                                            prefix='decoder',
+                                            mask=None, context=ctx,
+                                            one_step=True,
+                                            init_state=init_state,
+                                            emb_dropout=emb_dropout_d,
+                                            ctx_dropout=ctx_dropout_d,
+                                            rec_dropout=rec_dropout_d,
+                                            truncate_gradient=options['decoder_truncate_gradient'],
+                                            profile=profile)
+    # get the next hidden state
+    next_state = proj[0]
+
+    # get the weighted averages of context for this target word y
+    ctxs = proj[1]
+
+    # alignment matrix (attention model)
+    dec_alphas = proj[2]
+
+    if options['use_dropout'] and options['model_version'] < 0.1:
+        next_state_up = next_state * retain_probability_hidden
+        emb *= retain_probability_emb
+        ctxs *= retain_probability_hidden
+    else:
+        next_state_up = next_state
+
+    logit_lstm = get_layer_constr('ff')(tparams, next_state_up, options,
+                                    prefix='ff_logit_lstm', activ='linear')
+    logit_prev = get_layer_constr('ff')(tparams, emb, options,
+                                    prefix='ff_logit_prev', activ='linear')
+    logit_ctx = get_layer_constr('ff')(tparams, ctxs, options,
+                                   prefix='ff_logit_ctx', activ='linear')
+    logit = tensor.tanh(logit_lstm+logit_prev+logit_ctx)
+
+    # ablation analysis of the target vocabulary
+    logit_lstm_prev = tensor.tanh(logit_lstm+logit_prev)
+    logit_prev_ctx = tensor.tanh(logit_prev+logit_ctx)
+
+    if options['use_dropout'] and options['model_version'] < 0.1:
+        logit *= retain_probability_hidden
+
+    logit_W = tparams['Wemb' + decoder_embedding_suffix].T if options['tie_decoder_embeddings'] else None
+    logit = get_layer_constr('ff')(tparams, logit, options,
+                            prefix='ff_logit', activ='linear', W=logit_W)
+
+    # compute the softmax probability
+    next_probs = tensor.nnet.softmax(logit)
+    next_probs_lstm_prev = tensor.nnet.softmax(logit_lstm_prev)
+    next_probs_prev_ctx = tensor.nnet.softmax(logit_prev_ctx)
+
+    # sample from softmax distribution to get the sample
+    next_sample = trng.multinomial(pvals=next_probs).argmax(1)
+
+    # compile a function to do the whole thing above, next word probability,
+    # sampled word for the next target, next hidden state to be used
+    print >>sys.stderr, 'Building f_next..',
+    inps = [y, ctx, init_state]
+    outs = [next_probs, next_sample, next_state]
+    outs_lstm_prev = [next_probs_lstm_prev]
+    outs_prev_ctx = [next_probs_prev_ctx]
+
+    if return_alignment:
+        outs.append(dec_alphas)
+
+    f_next = theano.function(inps, outs, name='f_next', profile=profile)
+    f_next_lstm_prev = theano.function(inps, outs_lstm_prev, name='f_next_lstm_prev', profile=profile)
+    f_next_prev_ctx = theano.function(inps, outs_prev_ctx, name='f_next_prev_ctx', profile=profile)
+    print >>sys.stderr, 'Done'
+
+    return f_init, f_next, f_next_lstm_prev, f_next_prev_ctx
 
 # minimum risk cost
 # assumes cost is the negative sentence-level log probability
@@ -646,7 +765,34 @@ def build_full_sampler(tparams, options, use_noise, trng, greedy=False):
 
     return f_sample
 
+# only one f_init, f_next, instead of a list like in gen_sample.
+# 
+# however, you are allowed to provide a list of f_next_analysis, 
+# and this gen_vocab_analysis_sample will give you a distribution for each
+# analysis function supplied.
+def gen_vocab_analysis_sample(f_init, f_next, f_next_analysis, x, maxlen=30):
+    ret = f_init(x)
+    next_state = ret[0] 
+    ctx = ret[1]
+    next_w = -1
+    vocab_dists = [[]] * len(f_next_analysis) # (num_analysis, batch_size, vocab_size)
 
+    for ii in xrange(maxlen):
+      inps = [next_w, ctx, next_state]
+      ret = f_next(*inps)
+
+      # XXX: suppose next_p is of size (batch_size, vocab_size)
+      for i, f_next_analysis_i in enumerate(f_next_analysis):
+        next_p_i = f_next_analysis_i(*inps)[0]
+        vocab_dists[i].append(next_p_i)
+
+      # XXX: suppose next_w_tmp is a list of words 
+      # since we are not using multiple models, 
+      # there is supposed to be just one such pair in the list
+      next_w_tmp, next_state = ret[0], ret[1], ret[2]
+      next_w = next_w_tmp[0]
+
+    return vocab_dists
 
 # generate sample, either with stochastic sampling or beam search. Note that,
 # this function iteratively calls f_init and f_next functions.
@@ -843,6 +989,7 @@ def gen_sample(f_init, f_next, x, trng=None, k=1, maxlen=30,
 
             next_w = numpy.array([w[-1] for w in hyp_samples])
             next_state = [numpy.array(state) for state in zip(*hyp_states)]
+    # end of for maxlen
 
     # dump every remaining one
     if not argmax and live_k > 0:
