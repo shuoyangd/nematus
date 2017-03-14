@@ -19,7 +19,7 @@ from hypgraph import HypGraphRenderer
 def translate_model(queue, rqueue, pid, models, options, k, normalize, verbose, nbest, return_alignment, suppress_unk, return_hyp_graph, vocab_dist_analysis):
 
     from theano_util import (load_params, init_theano_params)
-    from nmt import (build_sampler, gen_sample, init_params)
+    from nmt import (build_sampler, build_vocab_probs_sampler, gen_sample, gen_vocab_analysis_sample, init_params)
 
     from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
     from theano import shared
@@ -67,7 +67,7 @@ def translate_model(queue, rqueue, pid, models, options, k, normalize, verbose, 
 
     def _analysis(seq):
         # vocab analysis does not support multiple models for the moment
-        return gen_vocab_analysis_sample(fs_init[0], fs_next[0], [f_next_lstm_prev, f_next_prev_ctx], 
+        return gen_vocab_analysis_sample(fs_init[0], fs_next[0], [fs_next[0], f_next_lstm_prev, f_next_prev_ctx], 
                                    numpy.array(seq).T.reshape([len(seq[0]), len(seq), 1]), maxlen=200)
 
     while True:
@@ -80,7 +80,9 @@ def translate_model(queue, rqueue, pid, models, options, k, normalize, verbose, 
             sys.stderr.write('{0} - {1}\n'.format(pid,idx))
         seq = _translate(x)
         if vocab_dist_analysis:
-          seq.append(_analysis(x))
+          list_seq = list(seq)
+          list_seq.append(_analysis(x))
+          seq = tuple(list_seq)
 
         rqueue.put((idx, seq))
 
@@ -232,12 +234,15 @@ def main(models, source_file, saveto, save_alignment=None, k=5,
     vocab_dists = None
     for i, trans in enumerate(_retrieve_jobs(n_samples)):
         if nbest:
+            print "nbest"
             if vocab_dist_analysis:
                 samples, scores, word_probs, alignment, hyp_graph, vocab_dists_batch = trans
                 if vocab_dists is None:
+                    print "called"
                     vocab_dists = vocab_dists_batch
                 else:
                     for (vocab_dist, vocab_dist_batch) in zip(vocab_dists, vocab_dists_batch):
+                        print "extended"
                         vocab_dist.extend(vocab_dist_batch)
             else:
                 samples, scores, word_probs, alignment, hyp_graph = trans
@@ -262,8 +267,9 @@ def main(models, source_file, saveto, save_alignment=None, k=5,
                                         i, _seqs2words(samples[j]), scores[j], ' '.join(source_sentences[i]) , len(source_sentences[i])+1, len(samples[j])))
                     print_matrix(alignment[j], save_alignment)
         else:
+            print "1best"
             if vocab_dist_analysis:
-              samples, scores, word_probs, alignment, hyp_graph, vocab_dist = trans
+              samples, scores, word_probs, alignment, hyp_graph, vocab_dists_batch = trans
               if vocab_dists is None:
                   vocab_dists = vocab_dists_batch
               else:

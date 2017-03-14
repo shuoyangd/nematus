@@ -542,6 +542,10 @@ def build_vocab_probs_sampler(tparams, options, use_noise, trng, return_alignmen
     logit_W = tparams['Wemb' + decoder_embedding_suffix].T if options['tie_decoder_embeddings'] else None
     logit = get_layer_constr('ff')(tparams, logit, options,
                             prefix='ff_logit', activ='linear', W=logit_W)
+    logit_lstm_prev = get_layer_constr('ff')(tparams, logit_lstm_prev, options,
+                            prefix='ff_logit', activ='linear', W=logit_W)
+    logit_prev_ctx = get_layer_constr('ff')(tparams, logit_prev_ctx, options,
+                            prefix='ff_logit', activ='linear', W=logit_W)
 
     # compute the softmax probability
     next_probs = tensor.nnet.softmax(logit)
@@ -772,25 +776,24 @@ def build_full_sampler(tparams, options, use_noise, trng, greedy=False):
 # analysis function supplied.
 def gen_vocab_analysis_sample(f_init, f_next, f_next_analysis, x, maxlen=30):
     ret = f_init(x)
-    next_state = ret[0] 
-    ctx = ret[1]
-    next_w = -1
-    vocab_dists = [[]] * len(f_next_analysis) # (num_analysis, batch_size, vocab_size)
+    next_state = ret[0]  # (1, dim)
+    ctx = ret[1] # (seq_len, 1, 2*dim)
+    next_w = -1 * numpy.ones((1,)).astype('int64')
+    vocab_dists = [[] for i in range(len(f_next_analysis))] # (num_analysis, batch_size, vocab_size)
 
     for ii in xrange(maxlen):
       inps = [next_w, ctx, next_state]
       ret = f_next(*inps)
 
-      # XXX: suppose next_p is of size (batch_size, vocab_size)
       for i, f_next_analysis_i in enumerate(f_next_analysis):
-        next_p_i = f_next_analysis_i(*inps)[0]
+        next_p_i = f_next_analysis_i(*inps)[0][0] # (vocab_size,)
         vocab_dists[i].append(next_p_i)
 
       # XXX: suppose next_w_tmp is a list of words 
       # since we are not using multiple models, 
       # there is supposed to be just one such pair in the list
-      next_w_tmp, next_state = ret[0], ret[1], ret[2]
-      next_w = next_w_tmp[0]
+      next_w_tmp, next_state = ret[1], ret[2]
+      next_w = next_w_tmp[0] * numpy.ones((1,)).astype('int64')
 
     return vocab_dists
 
