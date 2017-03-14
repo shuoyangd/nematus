@@ -234,7 +234,6 @@ def main(models, source_file, saveto, save_alignment=None, k=5,
     vocab_dists = None
     for i, trans in enumerate(_retrieve_jobs(n_samples)):
         if nbest:
-            print "nbest"
             if vocab_dist_analysis:
                 samples, scores, word_probs, alignment, hyp_graph, vocab_dists_batch = trans
                 if vocab_dists is None:
@@ -267,7 +266,6 @@ def main(models, source_file, saveto, save_alignment=None, k=5,
                                         i, _seqs2words(samples[j]), scores[j], ' '.join(source_sentences[i]) , len(source_sentences[i])+1, len(samples[j])))
                     print_matrix(alignment[j], save_alignment)
         else:
-            print "1best"
             if vocab_dist_analysis:
               samples, scores, word_probs, alignment, hyp_graph, vocab_dists_batch = trans
               if vocab_dists is None:
