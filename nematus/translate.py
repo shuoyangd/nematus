@@ -6,6 +6,7 @@ import sys
 import argparse
 
 import numpy
+import scipy.stats as stats
 import json
 import cPickle as pkl
 
@@ -15,6 +16,7 @@ from util import load_dict, load_config
 from compat import fill_options
 from hypgraph import HypGraphRenderer
 
+MAXLEN = 200
 
 def translate_model(queue, rqueue, pid, models, options, k, normalize, verbose, nbest, return_alignment, suppress_unk, return_hyp_graph, vocab_dist_analysis):
 
@@ -51,7 +53,7 @@ def translate_model(queue, rqueue, pid, models, options, k, normalize, verbose, 
         # sample given an input sequence and obtain scores
         sample, score, word_probs, alignment, hyp_graph = gen_sample(fs_init, fs_next,
                                    numpy.array(seq).T.reshape([len(seq[0]), len(seq), 1]),
-                                   trng=trng, k=k, maxlen=200,
+                                   trng=trng, k=k, maxlen=MAXLEN,
                                    stochastic=False, argmax=False, return_alignment=return_alignment,
                                    suppress_unk=suppress_unk, return_hyp_graph=return_hyp_graph)
 
@@ -67,8 +69,17 @@ def translate_model(queue, rqueue, pid, models, options, k, normalize, verbose, 
 
     def _analysis(seq):
         # vocab analysis does not support multiple models for the moment
-        return gen_vocab_analysis_sample(fs_init[0], fs_next[0], [fs_next[0], f_next_lstm_prev, f_next_prev_ctx], 
-                                   numpy.array(seq).T.reshape([len(seq[0]), len(seq), 1]), maxlen=200)
+        analytics = gen_vocab_analysis_sample(fs_init[0], fs_next[0], [fs_next[0], f_next_lstm_prev, f_next_prev_ctx], 
+              numpy.array(seq).T.reshape([len(seq[0]), len(seq), 1]), maxlen=MAXLEN)
+        kl = {}
+        for t in xrange(MAXLEN): # timestep
+            for i2 in xrange(len(analytics)): # first analytics
+                for i1 in xrange(i2): # second analytics
+                    if (i1, i2) not in kl:
+                        kl[i1, i2] = [ stats.entropy(analytics[i1][t], analytics[i2][t]) ]
+                    else:
+                        kl[i1, i2].append(stats.entropy(analytics[i1][t], analytics[i2][t]))
+        return kl
 
     while True:
         req = queue.get()
@@ -231,18 +242,16 @@ def main(models, source_file, saveto, save_alignment=None, k=5,
     _finish_processes()
 
     
-    vocab_dists = None
+    vocab_dists = {}
     for i, trans in enumerate(_retrieve_jobs(n_samples)):
         if nbest:
             if vocab_dist_analysis:
                 samples, scores, word_probs, alignment, hyp_graph, vocab_dists_batch = trans
-                if vocab_dists is None:
-                    print "called"
-                    vocab_dists = vocab_dists_batch
-                else:
-                    for (vocab_dist, vocab_dist_batch) in zip(vocab_dists, vocab_dists_batch):
-                        print "extended"
-                        vocab_dist.extend(vocab_dist_batch)
+                for k, v in vocab_dists_batch.items():
+                    if (i, k) not in vocab_dists:
+                        vocab_dists[(i, k)] = v
+                    else:
+                        vocab_dists[(i, k)].extend(v)
             else:
                 samples, scores, word_probs, alignment, hyp_graph = trans
             if return_hyp_graph:
@@ -267,12 +276,12 @@ def main(models, source_file, saveto, save_alignment=None, k=5,
                     print_matrix(alignment[j], save_alignment)
         else:
             if vocab_dist_analysis:
-              samples, scores, word_probs, alignment, hyp_graph, vocab_dists_batch = trans
-              if vocab_dists is None:
-                  vocab_dists = vocab_dists_batch
-              else:
-                  for (vocab_dist, vocab_dist_batch) in zip(vocab_dists, vocab_dists_batch):
-                      vocab_dist.extend(vocab_dist_batch)
+                samples, scores, word_probs, alignment, hyp_graph, vocab_dists_batch = trans
+                for k, v in vocab_dists_batch.items():
+                    if (i, k) not in vocab_dists:
+                        vocab_dists[(i, k)] = v
+                    else:
+                        vocab_dists[(i, k)].extend(v)
             else:
               samples, scores, word_probs, alignment, hyp_graph = trans
             if return_hyp_graph:
