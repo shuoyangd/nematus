@@ -42,7 +42,7 @@ def translate_model(queue, rqueue, pid, models, options, k, normalize, verbose, 
 
         # word index
         if vocab_dist_analysis:
-          f_init, f_next, f_next_lstm_prev, f_next_prev_ctx = build_vocab_probs_sampler(tparams, option, use_noise, trng, return_alignment=return_alignment)
+          f_init, f_next, f_next_lstm, f_next_prev, f_next_ctx, f_next_lstm_prev, f_next_prev_ctx = build_vocab_probs_sampler(tparams, option, use_noise, trng, return_alignment=return_alignment)
         else:
           f_init, f_next = build_sampler(tparams, option, use_noise, trng, return_alignment=return_alignment)
 
@@ -69,7 +69,7 @@ def translate_model(queue, rqueue, pid, models, options, k, normalize, verbose, 
 
     def _analysis(seq):
         # vocab analysis does not support multiple models for the moment
-        analytics = gen_vocab_analysis_sample(fs_init[0], fs_next[0], [fs_next[0], f_next_lstm_prev, f_next_prev_ctx], 
+        analytics = gen_vocab_analysis_sample(fs_init[0], fs_next[0], [fs_next[0], f_next_lstm, f_next_prev, f_next_ctx, f_next_lstm_prev, f_next_prev_ctx], 
               numpy.array(seq).T.reshape([len(seq[0]), len(seq), 1]), maxlen=MAXLEN)
         kl = {}
         for t in xrange(MAXLEN): # timestep

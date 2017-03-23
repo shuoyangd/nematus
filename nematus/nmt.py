@@ -533,6 +533,9 @@ def build_vocab_probs_sampler(tparams, options, use_noise, trng, return_alignmen
     logit = tensor.tanh(logit_lstm+logit_prev+logit_ctx)
 
     # ablation analysis of the target vocabulary
+    logit_lstm = tensor.tanh(logit_lstm)
+    logit_prev = tensor.tanh(logit_prev)
+    logit_ctx = tensor.tanh(logit_ctx)
     logit_lstm_prev = tensor.tanh(logit_lstm+logit_prev)
     logit_prev_ctx = tensor.tanh(logit_prev+logit_ctx)
 
@@ -542,6 +545,12 @@ def build_vocab_probs_sampler(tparams, options, use_noise, trng, return_alignmen
     logit_W = tparams['Wemb' + decoder_embedding_suffix].T if options['tie_decoder_embeddings'] else None
     logit = get_layer_constr('ff')(tparams, logit, options,
                             prefix='ff_logit', activ='linear', W=logit_W)
+    logit_lstm = get_layer_constr('ff')(tparams, logit_lstm, options,
+                            prefix='ff_logit', activ='linear', W=logit_W)
+    logit_prev = get_layer_constr('ff')(tparams, logit_prev, options,
+                            prefix='ff_logit', activ='linear', W=logit_W)
+    logit_ctx = get_layer_constr('ff')(tparams, logit_ctx, options,
+                            prefix='ff_logit', activ='linear', W=logit_W)
     logit_lstm_prev = get_layer_constr('ff')(tparams, logit_lstm_prev, options,
                             prefix='ff_logit', activ='linear', W=logit_W)
     logit_prev_ctx = get_layer_constr('ff')(tparams, logit_prev_ctx, options,
@@ -549,6 +558,12 @@ def build_vocab_probs_sampler(tparams, options, use_noise, trng, return_alignmen
 
     # compute the softmax probability
     next_probs = tensor.nnet.softmax(logit)
+
+    # for the single ones, there is an extra tanh that needs to be made up
+    next_probs_lstm = tensor.nnet.softmax(logit_lstm)
+    next_probs_prev = tensor.nnet.softmax(logit_prev)
+    next_probs_ctx = tensor.nnet.softmax(logit_ctx)
+
     next_probs_lstm_prev = tensor.nnet.softmax(logit_lstm_prev)
     next_probs_prev_ctx = tensor.nnet.softmax(logit_prev_ctx)
 
@@ -560,6 +575,9 @@ def build_vocab_probs_sampler(tparams, options, use_noise, trng, return_alignmen
     print >>sys.stderr, 'Building f_next..',
     inps = [y, ctx, init_state]
     outs = [next_probs, next_sample, next_state]
+    outs_lstm = [next_probs_lstm]
+    outs_prev = [next_probs_prev]
+    outs_ctx = [next_probs_ctx]
     outs_lstm_prev = [next_probs_lstm_prev]
     outs_prev_ctx = [next_probs_prev_ctx]
 
@@ -567,11 +585,14 @@ def build_vocab_probs_sampler(tparams, options, use_noise, trng, return_alignmen
         outs.append(dec_alphas)
 
     f_next = theano.function(inps, outs, name='f_next', profile=profile)
+    f_next_lstm = theano.function(inps, outs_lstm, name='f_next_lstm', profile=profile)
+    f_next_prev = theano.function(inps, outs_prev, name='f_next_prev', profile=profile)
+    f_next_ctx = theano.function(inps, outs_ctx, name='f_next_ctx', profile=profile)
     f_next_lstm_prev = theano.function(inps, outs_lstm_prev, name='f_next_lstm_prev', profile=profile)
     f_next_prev_ctx = theano.function(inps, outs_prev_ctx, name='f_next_prev_ctx', profile=profile)
     print >>sys.stderr, 'Done'
 
-    return f_init, f_next, f_next_lstm_prev, f_next_prev_ctx
+    return f_init, f_next, f_next_lstm, f_next_prev, f_next_ctx, f_next_lstm_prev, f_next_prev_ctx
 
 # minimum risk cost
 # assumes cost is the negative sentence-level log probability
