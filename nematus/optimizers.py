@@ -138,6 +138,45 @@ def rmsprop(lr, tparams, grads, inp, cost, optimizer_params={}, profile=False):
     # TODO: third return value should be a dict of name->shared var used by optimizer
     return f_grad_shared, f_update, {}
 
+# no place is reserved for alpha, using as a constant for the moment
+ALPHA = 0.3
+def backstitch_sgd(lr, tparams, grads, inp, cost, optimizer_params=None, profile=False):
+    gshared = [theano.shared(p.get_value() * 0.,
+                             name='%s_grad' % k)
+               for k, p in tparams.iteritems()]
+    gsup = [(gs, g) for gs, g in zip(gshared, grads)]
+
+    f_grad_shared = theano.function(inp, cost, updates=gsup,
+                                    profile=profile)
+
+    pup1 = [(p, p + ALPHA * lr * g) for p, g in zip(itemlist(tparams), gshared)]
+    f_update1 = theano.function([lr], [], updates=pup1, profile=profile)
+
+    pup2 = [(p, p - (1 + ALPHA) * lr * g) for p, g in zip(itemlist(tparams), gshared)]
+    f_update2 = theano.function([lr], [], updates=pup2, profile=profile)
+
+    return f_grad_shared, f_update1, f_update2, {}
+
+F_ALPHA = ALPHA + ALPHA * ALPHA
+F_EPSILON = 0.1
+def fast_backstitch_sgd(lr, tparams, grads, inp, cost, optimizer_params=None, profile=False):
+    dshared = [theano.shared(p.get_value() * 0.,
+                             name='%s_grad' % k)
+               for k, p in tparams.iteritems()]
+    dsup1 = [(ds, ds + g) for ds, g in zip(dshared, grads)] # accumulate
+    dsup2 = [(ds, -ds * (F_ALPHA / F_EPSILON - 1 - F_EPSILON) / (F_ALPHA / F_EPSILON)) for ds in dshared] # scale
+    dsup2 = [(ds, 0) for ds in dshared] # clear
+
+    f_grad_shared = theano.function(inp, cost, updates=gsup+dsup1,
+                                    profile=profile)
+
+    pup1 = [(p, p + F_EPSILON * lr * d) for p, d in zip(itemlist(tparams), dshared)]
+    f_update1 = theano.function([lr], [], updates=pup1 + dsup1, profile=profile)
+
+    pup2 = [(p, p - F_ALPHA / F_EPSILON * lr * g) for p, g in zip(itemlist(tparams), gshared)]
+    f_update2 = theano.function([lr], [], updates=pup2 + dsup2, profile=profile)
+
+    return f_grad_shared, f_update1, f_update2, {}
 
 def sgd(lr, tparams, grads, inp, cost, optimizer_params=None, profile=False):
     gshared = [theano.shared(p.get_value() * 0.,

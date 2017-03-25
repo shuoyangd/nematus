@@ -38,7 +38,7 @@ from metrics.scorer_provider import ScorerProvider
 
 from domain_interpolation_data_iterator import DomainInterpolatorTextIterator
 
-# batch preparation
+
 def prepare_data(seqs_x, seqs_y, maxlen=None, n_words_src=30000,
                  n_words=30000):
     # x: a list of sentences
@@ -1165,7 +1165,13 @@ def train(dim_word=512,  # word vector dimensionality
     lr = tensor.scalar(name='lr')
 
     print 'Building optimizers...',
-    f_grad_shared, f_update, optimizer_tparams = eval(optimizer)(lr, updated_params,
+    if optimizer == "backstitch_sgd" or "fast_backstitch_sgd":
+      f_grad_shared, f_update1, f_update2, optimizer_tparams = eval(optimizer)(lr, updated_params,
+                                                                 grads, inps, cost,
+                                                                 profile=profile,
+                                                                 optimizer_params=optimizer_params)
+    else:
+      f_grad_shared, f_update, optimizer_tparams = eval(optimizer)(lr, updated_params,
                                                                  grads, inps, cost,
                                                                  profile=profile,
                                                                  optimizer_params=optimizer_params)
@@ -1229,11 +1235,21 @@ def train(dim_word=512,  # word vector dimensionality
                 last_words += (numpy.sum(x_mask) + numpy.sum(y_mask))/2.0
 
                 # compute cost, grads and copy grads to shared variables
-                cost = f_grad_shared(x, x_mask, y, y_mask)
-                cost_sum += cost
+                if optimizer == "backstitch_sgd" or "fast_backstitch_sgd":
+                  cost = f_grad_shared(x, x_mask, y, y_mask) # first grad evaluation
+                  cost_sum += cost
 
-                # do the update on parameters
-                f_update(lrate)
+                  f_update1(lrate) # first update
+
+                  cost = f_grad_shared(x, x_mask, y, y_mask) # second grad evaluation
+                  f_update2(lrate) # second update
+
+                else:
+                  cost = f_grad_shared(x, x_mask, y, y_mask)
+                  cost_sum += cost
+
+                  # do the update on parameters
+                  f_update(lrate)
 
             elif model_options['objective'] == 'MRT':
                 assert maxlen is not None and maxlen > 0
@@ -1306,11 +1322,21 @@ def train(dim_word=512,  # word vector dimensionality
                     loss = mean_loss - numpy.array(scorer.score_matrix(samples), dtype='float32')
 
                     # compute cost, grads and copy grads to shared variables
-                    cost = f_grad_shared(x, x_mask, y, y_mask, loss)
-                    cost_sum += cost
-
-                    # do the update on parameters
-                    f_update(lrate)
+                    if optimizer == "backstitch_sgd" or "fast_backstitch_sgd":
+                      cost = f_grad_shared(x, x_mask, y, y_mask) # first grad evaluation
+                      cost_sum += cost
+    
+                      f_update1(lrate) # first update
+    
+                      cost = f_grad_shared(x, x_mask, y, y_mask) # second grad evaluation
+                      f_update2(lrate) # second update
+    
+                    else:
+                      cost = f_grad_shared(x, x_mask, y, y_mask)
+                      cost_sum += cost
+    
+                      # do the update on parameters
+                      f_update(lrate)
 
             # check for bad numbers, usually we remove non-finite elements
             # and continue training - but not done here
