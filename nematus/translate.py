@@ -73,12 +73,11 @@ def translate_model(queue, rqueue, pid, models, options, k, normalize, verbose, 
               numpy.array(seq).T.reshape([len(seq[0]), len(seq), 1]), maxlen=MAXLEN)
         kl = {}
         for t in xrange(MAXLEN): # timestep
-            for i2 in xrange(len(analytics)): # first analytics
-                for i1 in xrange(i2): # second analytics
-                    if (i1, i2) not in kl:
-                        kl[i1, i2] = [ stats.entropy(analytics[i1][t], analytics[i2][t]) ]
-                    else:
-                        kl[i1, i2].append(stats.entropy(analytics[i1][t], analytics[i2][t]))
+            for i in xrange(len(analytics)): # first analytics
+                if i not in kl:
+                    kl[i] = [ stats.entropy(analytics[i][t]) ]
+                else:
+                    kl[i].append(stats.entropy(analytics[i][t]))
         return kl
 
     while True:
