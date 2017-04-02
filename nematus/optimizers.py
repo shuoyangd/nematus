@@ -165,16 +165,16 @@ def fast_backstitch_sgd(lr, tparams, grads, inp, cost, optimizer_params=None, pr
                for k, p in tparams.iteritems()]
     dsup1 = [(ds, ds + g) for ds, g in zip(dshared, grads)] # accumulate
     dsup2 = [(ds, -ds * (F_ALPHA / F_EPSILON - 1 - F_EPSILON) / (F_ALPHA / F_EPSILON)) for ds in dshared] # scale
-    dsup2 = [(ds, 0) for ds in dshared] # clear
+    dsup2 = [(ds, ds * 0.) for ds in dshared] # clear
 
-    f_grad_shared = theano.function(inp, cost, updates=gsup+dsup1,
+    f_grad_shared = theano.function(inp, cost, updates=dsup1,
                                     profile=profile)
 
     pup1 = [(p, p + F_EPSILON * lr * d) for p, d in zip(itemlist(tparams), dshared)]
-    f_update1 = theano.function([lr], [], updates=pup1 + dsup1, profile=profile)
+    f_update1 = theano.function([lr], [], updates=pup1 + dsup2, profile=profile)
 
-    pup2 = [(p, p - F_ALPHA / F_EPSILON * lr * g) for p, g in zip(itemlist(tparams), gshared)]
-    f_update2 = theano.function([lr], [], updates=pup2 + dsup2, profile=profile)
+    pup2 = [(p, p - F_ALPHA / F_EPSILON * lr * g) for p, g in zip(itemlist(tparams), dshared)]
+    f_update2 = theano.function([lr], [], updates=pup2 + dsup3, profile=profile)
 
     return f_grad_shared, f_update1, f_update2, {}
 
