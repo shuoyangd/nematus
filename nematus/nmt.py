@@ -1165,7 +1165,8 @@ def train(dim_word=512,  # word vector dimensionality
     lr = tensor.scalar(name='lr')
 
     print 'Building optimizers...',
-    if optimizer == "backstitch_sgd" or optimizer == "fast_backstitch_sgd":
+    if optimizer == "backstitch_sgd" or optimizer == "fast_backstitch_sgd" or \
+        optimizer == "backstitch_adadelta" or optimizer == "fast_backstitch_adadelta":
       f_grad_shared, f_update1, f_update2, optimizer_tparams = eval(optimizer)(lr, updated_params,
                                                                  grads, inps, cost,
                                                                  profile=profile,
@@ -1235,7 +1236,8 @@ def train(dim_word=512,  # word vector dimensionality
                 last_words += (numpy.sum(x_mask) + numpy.sum(y_mask))/2.0
 
                 # compute cost, grads and copy grads to shared variables
-                if optimizer == "backstitch_sgd" or optimizer == "fast_backstitch_sgd":
+                if optimizer == "backstitch_sgd" or optimizer == "fast_backstitch_sgd" or \
+                    optimizer == "backstitch_adadelta" or optimizer == "fast_backstitch_adadelta":
                   cost = f_grad_shared(x, x_mask, y, y_mask) # first grad evaluation
                   cost_sum += cost
 
@@ -1322,7 +1324,8 @@ def train(dim_word=512,  # word vector dimensionality
                     loss = mean_loss - numpy.array(scorer.score_matrix(samples), dtype='float32')
 
                     # compute cost, grads and copy grads to shared variables
-                    if optimizer == "backstitch_sgd" or optimizer == "fast_backstitch_sgd":
+                    if optimizer == "backstitch_sgd" or optimizer == "fast_backstitch_sgd" or \
+                        optimizer == "backstitch_adadelta" or optimizer == "fast_backstitch_adadelta":
                       cost = f_grad_shared(x, x_mask, y, y_mask) # first grad evaluation
                       cost_sum += cost
     
@@ -1589,7 +1592,7 @@ if __name__ == '__main__':
     training.add_argument('--maxlen', type=int, default=100, metavar='INT',
                          help="maximum sequence length (default: %(default)s)")
     training.add_argument('--optimizer', type=str, default="adam",
-                         choices=['adam', 'adadelta', 'rmsprop', 'sgd', 'backstitch_sgd', 'fast_backstitch_sgd'],
+                         choices=['adam', 'adadelta', 'rmsprop', 'sgd', 'backstitch_sgd', 'fast_backstitch_sgd', 'backstitch_adadelta', 'fast_backstitch_adadelta'],
                          help="optimizer (default: %(default)s)")
     training.add_argument('--batch_size', type=int, default=80, metavar='INT',
                          help="minibatch size (default: %(default)s)")
