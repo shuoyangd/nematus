@@ -157,6 +157,38 @@ def backstitch_sgd(lr, tparams, grads, inp, cost, optimizer_params=None, profile
 
     return f_grad_shared, f_update1, f_update2, {}
 
+def backstitch_adadelta(lr, tparams, grads, inp, cost, optimizer_params={}, profile=False):
+    gshared = [theano.shared(p.get_value() * numpy.float32(0.),
+                                  name='%s_grad' % k)
+                    for k, p in tparams.iteritems()]
+    running_up2 = [theano.shared(p.get_value() * numpy.float32(0.),
+                                 name='%s_rup2' % k)
+                   for k, p in tparams.iteritems()]
+    running_grads2 = [theano.shared(p.get_value() * numpy.float32(0.),
+                                    name='%s_rgrad2' % k)
+                      for k, p in tparams.iteritems()]
+
+    gsup = [(zg, g) for zg, g in zip(gshared, grads)]
+    f_grad_shared = theano.function(inp, cost, updates=gsup,
+                                    profile=profile)
+
+    adlr = [-tensor.sqrt(ru2 + 1e-6) / tensor.sqrt(rg2 + 1e-6)
+             for ru2, rg2 in zip(running_up2, running_grads2)] # adadelta learning rate
+    rg2up = [(rg2, 0.95 * rg2 + 0.05 * (g ** 2))
+             for rg2, g in zip(running_grads2, gshared)]
+    ru2up = [(ru2, 0.95 * ru2 + 0.05 * ((nu * g) ** 2))
+             for ru2, g in zip(running_up2, gshared)]
+    pup1 = [(p, p + ALPHA * nu * g) for p, nu in zip(itemlist(tparams), adlr)]
+    pup2 = [(p, p - (1 + ALPHA) * nu * g) for p, nu in zip(itemlist(tparams), adlr)]
+
+    f_update1 = theano.function([lr], [], updates=rg2up + ru2up + pup1,
+                               on_unused_input='ignore', profile=profile)
+    f_update2 = theano.function([lr], [], updates=pup2,
+                               on_unused_input='ignore', profile=profile)
+
+    # TODO: third return value should be a dict of name->shared var used by optimizer
+    return f_grad_shared, f_update1, f_update2, {}
+
 F_ALPHA = ALPHA + ALPHA * ALPHA
 F_EPSILON = 0.1
 def fast_backstitch_sgd(lr, tparams, grads, inp, cost, optimizer_params=None, profile=False):
@@ -165,7 +197,7 @@ def fast_backstitch_sgd(lr, tparams, grads, inp, cost, optimizer_params=None, pr
                for k, p in tparams.iteritems()]
     dsup1 = [(ds, ds + g) for ds, g in zip(dshared, grads)] # accumulate
     dsup2 = [(ds, -ds * (F_ALPHA / F_EPSILON - 1 - F_EPSILON) / (F_ALPHA / F_EPSILON)) for ds in dshared] # scale
-    dsup2 = [(ds, ds * 0.) for ds in dshared] # clear
+    dsup3 = [(ds, ds * 0.) for ds in dshared] # clear
 
     f_grad_shared = theano.function(inp, cost, updates=dsup1,
                                     profile=profile)
@@ -176,6 +208,41 @@ def fast_backstitch_sgd(lr, tparams, grads, inp, cost, optimizer_params=None, pr
     pup2 = [(p, p - F_ALPHA / F_EPSILON * lr * g) for p, g in zip(itemlist(tparams), dshared)]
     f_update2 = theano.function([lr], [], updates=pup2 + dsup3, profile=profile)
 
+    return f_grad_shared, f_update1, f_update2, {}
+
+def backstitch_adadelta(lr, tparams, grads, inp, cost, optimizer_params={}, profile=False):
+    dshared = [theano.shared(p.get_value() * numpy.float32(0.),
+                                  name='%s_grad' % k)
+                    for k, p in tparams.iteritems()]
+    running_up2 = [theano.shared(p.get_value() * numpy.float32(0.),
+                                 name='%s_rup2' % k)
+                   for k, p in tparams.iteritems()]
+    running_grads2 = [theano.shared(p.get_value() * numpy.float32(0.),
+                                    name='%s_rgrad2' % k)
+                      for k, p in tparams.iteritems()]
+
+    dsup1 = [(ds, ds + g) for ds, g in zip(gshared, grads)]
+    dsup2 = [(ds, -ds * (F_ALPHA / F_EPSILON - 1 - F_EPSILON) / (F_ALPHA / F_EPSILON)) for ds in dshared] # scale
+    dsup3 = [(ds, ds * 0.) for ds in dshared] # clear
+
+    f_grad_shared = theano.function(inp, cost, updates=dsup1,
+                                    profile=profile)
+
+    adlr = [-tensor.sqrt(ru2 + 1e-6) / tensor.sqrt(rg2 + 1e-6)
+             for ru2, rg2 in zip(running_up2, running_grads2)] # adadelta learning rate
+    rg2up = [(rg2, 0.95 * rg2 + 0.05 * (g ** 2))
+             for rg2, g in zip(running_grads2, grads)]
+    ru2up = [(ru2, 0.95 * ru2 + 0.05 * ((nu * g) ** 2))
+             for ru2, g in zip(running_up2, grads)]
+    pup1 = [(p, p + F_EPSILON * nu * g) for p, nu in zip(itemlist(tparams), adlr)]
+    pup2 = [(p, p - F_ALPHA / F_EPSILON * nu * g) for p, nu in zip(itemlist(tparams), adlr)]
+
+    f_update1 = theano.function([lr], [], updates=rg2up + ru2up + pup1 + dsup2,
+                               on_unused_input='ignore', profile=profile)
+    f_update2 = theano.function([lr], [], updates=pup2 + dsup3,
+                               on_unused_input='ignore', profile=profile)
+
+    # TODO: third return value should be a dict of name->shared var used by optimizer
     return f_grad_shared, f_update1, f_update2, {}
 
 def sgd(lr, tparams, grads, inp, cost, optimizer_params=None, profile=False):
