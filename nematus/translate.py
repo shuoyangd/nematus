@@ -16,7 +16,21 @@ from compat import fill_options
 from hypgraph import HypGraphRenderer
 
 
-def translate_model(queue, rqueue, pid, models, options, k, normalize, verbose, nbest, return_alignment, suppress_unk, return_hyp_graph):
+def translate_model(queue, rqueue, pid, models, options, k, normalization_alpha, verbose, nbest, return_alignment, suppress_unk, return_hyp_graph, deviceid):
+
+    # if the --device-list argument is set
+    if deviceid != '':
+        import os
+        theano_flags = os.environ['THEANO_FLAGS'].split(',')
+        exist = False
+        for i in xrange(len(theano_flags)):
+            if theano_flags[i].strip().startswith('device'):
+                exist = True
+                theano_flags[i] = '%s=%s' % ('device', deviceid)
+                break
+        if exist == False:
+            theano_flags.append('%s=%s' % ('device', deviceid))
+        os.environ['THEANO_FLAGS'] = ','.join(theano_flags)
 
     from theano_util import (load_params, init_theano_params)
     from nmt import (build_sampler, gen_sample, init_params)
@@ -30,8 +44,6 @@ def translate_model(queue, rqueue, pid, models, options, k, normalize, verbose, 
     fs_next = []
 
     for model, option in zip(models, options):
-
-
         # load model parameters and set theano shared variables
         param_list = numpy.load(model).files
         param_list = dict.fromkeys([key for key in param_list if not key.startswith('adam_')], 0)
@@ -53,9 +65,9 @@ def translate_model(queue, rqueue, pid, models, options, k, normalize, verbose, 
                                    suppress_unk=suppress_unk, return_hyp_graph=return_hyp_graph)
 
         # normalize scores according to sequence lengths
-        if normalize:
-            lengths = numpy.array([len(s) for s in sample])
-            score = score / lengths
+        if normalization_alpha:
+            adjusted_lengths = numpy.array([len(s) ** normalization_alpha for s in sample])
+            score = score / adjusted_lengths
         if nbest:
             return sample, score, word_probs, alignment, hyp_graph
         else:
@@ -79,37 +91,36 @@ def translate_model(queue, rqueue, pid, models, options, k, normalize, verbose, 
 # prints alignment weights for a hypothesis
 # dimension (target_words+1 * source_words+1)
 def print_matrix(hyp, file):
-  # each target word has corresponding alignment weights
-  for target_word_alignment in hyp:
-    # each source hidden state has a corresponding weight
-    for w in target_word_alignment:
-      print >>file, w,
+    # each target word has corresponding alignment weights
+    for target_word_alignment in hyp:
+        # each source hidden state has a corresponding weight
+        for w in target_word_alignment:
+            print >>file, w,
+        print >> file, ""
     print >> file, ""
-  print >> file, ""
 
 def print_matrix_json(hyp, source, target, sid, tid, file):
-  source.append("</s>")
-  target.append("</s>")
-  links = []
-  for ti, target_word_alignment in enumerate(hyp):
-    for si,w in enumerate(target_word_alignment):
-      links.append((target[ti], source[si], str(w), sid, tid))
-  json.dump(links,file, ensure_ascii=False, indent=2)
+    source.append("</s>")
+    target.append("</s>")
+    links = []
+    for ti, target_word_alignment in enumerate(hyp):
+        for si,w in enumerate(target_word_alignment):
+            links.append((target[ti], source[si], str(w), sid, tid))
+    json.dump(links,file, ensure_ascii=False, indent=2)
 
 
 def print_matrices(mm, file):
-  for hyp in mm:
-    print_matrix(hyp, file)
-    print >>file, "\n"
+    for hyp in mm:
+        print_matrix(hyp, file)
+        print >>file, "\n"
 
 
 def main(models, source_file, saveto, save_alignment=None, k=5,
-         normalize=False, n_process=5, chr_level=False, verbose=False, nbest=False, suppress_unk=False, a_json=False, print_word_probabilities=False, return_hyp_graph=False):
+         normalization_alpha=0.0, n_process=5, chr_level=False, verbose=False, nbest=False, suppress_unk=False, a_json=False, print_word_probabilities=False, return_hyp_graph=False, device_list=[]):
     # load model model_options
     options = []
     for model in models:
         options.append(load_config(model))
-
         fill_options(options[-1])
 
     dictionaries = options[0]['dictionaries']
@@ -147,9 +158,12 @@ def main(models, source_file, saveto, save_alignment=None, k=5,
     rqueue = Queue()
     processes = [None] * n_process
     for midx in xrange(n_process):
+        deviceid = ''
+        if device_list is not None and len(device_list) != 0:
+            deviceid = device_list[midx % len(device_list)].strip()
         processes[midx] = Process(
             target=translate_model,
-            args=(queue, rqueue, midx, models, options, k, normalize, verbose, nbest, save_alignment is not None, suppress_unk, return_hyp_graph))
+            args=(queue, rqueue, midx, models, options, k, normalization_alpha, verbose, nbest, save_alignment is not None, suppress_unk, return_hyp_graph, deviceid))
         processes[midx].start()
 
     # utility function
@@ -199,7 +213,7 @@ def main(models, source_file, saveto, save_alignment=None, k=5,
                 # if queue is empty after 5s, check if processes are still alive
                 except Empty:
                     for midx in xrange(n_process):
-                        if not processes[midx].is_alive():
+                        if not processes[midx].is_alive() and processes[midx].exitcode != 0:
                             # kill all other processes and raise exception if one dies
                             queue.cancel_join_thread()
                             rqueue.cancel_join_thread()
@@ -235,12 +249,12 @@ def main(models, source_file, saveto, save_alignment=None, k=5,
                 # print alignment matrix for each hypothesis
                 # header: sentence id ||| translation ||| score ||| source ||| source_token_count+eos translation_token_count+eos
                 if save_alignment is not None:
-                  if a_json:
-                    print_matrix_json(alignment[j], source_sentences[i], _seqs2words(samples[j]).split(), i, i+j,save_alignment)
-                  else:
-                    save_alignment.write('{0} ||| {1} ||| {2} ||| {3} ||| {4} {5}\n'.format(
-                                        i, _seqs2words(samples[j]), scores[j], ' '.join(source_sentences[i]) , len(source_sentences[i])+1, len(samples[j])))
-                    print_matrix(alignment[j], save_alignment)
+                    if a_json:
+                        print_matrix_json(alignment[j], source_sentences[i], _seqs2words(samples[j]).split(), i, i+j,save_alignment)
+                    else:
+                        save_alignment.write('{0} ||| {1} ||| {2} ||| {3} ||| {4} {5}\n'.format(
+                                             i, _seqs2words(samples[j]), scores[j], ' '.join(source_sentences[i]) , len(source_sentences[i])+1, len(samples[j])))
+                        print_matrix(alignment[j], save_alignment)
         else:
             samples, scores, word_probs, alignment, hyp_graph = trans
             if return_hyp_graph:
@@ -253,12 +267,12 @@ def main(models, source_file, saveto, save_alignment=None, k=5,
                     saveto.write("{} ".format(prob))
                 saveto.write('\n')
             if save_alignment is not None:
-              if a_json:
-                print_matrix_json(alignment, source_sentences[i], _seqs2words(trans[0]).split(), i, i,save_alignment)
-              else:
-                save_alignment.write('{0} ||| {1} ||| {2} ||| {3} ||| {4} {5}\n'.format(
-                                      i, _seqs2words(trans[0]), 0, ' '.join(source_sentences[i]) , len(source_sentences[i])+1, len(trans[0])))
-                print_matrix(alignment, save_alignment)
+                if a_json:
+                    print_matrix_json(alignment, source_sentences[i], _seqs2words(trans[0]).split(), i, i,save_alignment)
+                else:
+                    save_alignment.write('{0} ||| {1} ||| {2} ||| {3} ||| {4} {5}\n'.format(
+                                         i, _seqs2words(trans[0]), 0, ' '.join(source_sentences[i]) , len(source_sentences[i])+1, len(trans[0])))
+                    print_matrix(alignment, save_alignment)
 
     sys.stderr.write('Done\n')
 
@@ -269,8 +283,8 @@ if __name__ == "__main__":
                         help="Beam size (default: %(default)s))")
     parser.add_argument('-p', type=int, default=1,
                         help="Number of processes (default: %(default)s))")
-    parser.add_argument('-n', action="store_true",
-                        help="Normalize scores by sentence length")
+    parser.add_argument('-n', type=float, default=0.0, nargs="?", const=1.0, metavar="ALPHA",
+                        help="Normalize scores by sentence length (with argument, exponentiate lengths by ALPHA)")
     parser.add_argument('-c', action="store_true", help="Character-level")
     parser.add_argument('-v', action="store_true", help="verbose mode.")
     parser.add_argument('--models', '-m', type=str, nargs = '+', required=True,
@@ -291,10 +305,12 @@ if __name__ == "__main__":
     parser.add_argument('--suppress-unk', action="store_true", help="Suppress hypotheses containing UNK.")
     parser.add_argument('--print-word-probabilities', '-wp',action="store_true", help="Print probabilities of each word")
     parser.add_argument('--search_graph', '-sg', help="Output file for search graph rendered as PNG image")
+    parser.add_argument('--device-list', '-dl', type=str, nargs='*', required=False,
+                        help="User specified device list for multi-thread decoding (default: [])")
 
     args = parser.parse_args()
 
     main(args.models, args.input,
-         args.output, k=args.k, normalize=args.n, n_process=args.p,
+         args.output, k=args.k, normalization_alpha=args.n, n_process=args.p,
          chr_level=args.c, verbose=args.v, nbest=args.n_best, suppress_unk=args.suppress_unk, 
-         print_word_probabilities = args.print_word_probabilities, save_alignment=args.output_alignment, a_json=args.json_alignment, return_hyp_graph=args.search_graph)
+         print_word_probabilities = args.print_word_probabilities, save_alignment=args.output_alignment, a_json=args.json_alignment, return_hyp_graph=args.search_graph, device_list=args.device_list)
